@@ -1,0 +1,241 @@
+---
+title: "Data Mining Final Project"
+author: "yeah "
+date: "11/30/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Packages we need:
+```{r}
+library(caret)
+library("dplyr")
+library(reshape2)
+library(ggplot2)
+library(e1071)
+library(ROCR)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+```
+\section{1. Introduction and Literature Review.}
+
+In the 21st century, when types of entertainment have become more common than ever before, going to cinemas and watching movies are still a good option for spending leisure time. Although watching movies seems easy and entertaining, the actual process that it takes until a film is delivered to the viewer is not as simple. 	The amount of film budgets that is usually published on the Internet may seem really scary at first sight. In reality, they are even scarier. As stated by Zipin (2019), “major studios don’t disclose the full budgets for their films (production, development, and marketing/advertising). This is in part because it costs far more to make and market a film than it seems.” Moreover, many famous films, despite their big success, do not really cover their expenses. For example, a lot of people were shocked when leaked financial statements showed that Harry Potter and the Order of the Phoenix had allegedly lost $167 million, despite $967 million in global revenues (Anders, 2011). 
+According to Although filmmaking requires substantial capital investment, it is not known whether cinematic creativity is positively correlated with the size of the film's budget. In spite of the fact that this analysis is somewhat similar to ours, 
+
+	In this project, we use a dataset of 2236 movies  to find the best model that predicts if the movie will cover its budget based on several characteristics.
+
+Cleaning:
+
+We create Covered variable, and it will be our dependant variable, clean the data from redundant variables, and write the train/test datasets.
+
+```{r}
+movies <- read.csv("movies3.csv")
+movies$Covered <- as.factor((movies$gross_adjusted-movies$budget_adjusted)>0)
+levels(movies$Covered)<-c("No","Yes")
+```
+Removing incomplete rows and useless columns
+```{r}
+movies <- subset(movies, select = -c(gross,budget,Writer,Actors,title,Country, Language, Genre, Director, Plot, Awards, DVD, Release,Release_Month, Release_Day, Release_year))
+movies <- movies[complete.cases(movies),]
+write.csv(movies, file  = "movies.csv")
+```
+
+
+Some Plots
+```{r}
+ggplot(data=movies, aes(x=genre_first, fill= Covered))+geom_bar(position = position_dodge(width = 0.5)) + 
+  labs(title = "Covered vs Genre", 
+       x = "Genre", y = "count") + 
+    theme_minimal()+theme(axis.text.x = element_text(angle = 40))
+```
+  
+Correaltions matrix/Heatmap
+```{r}
+movies_num <- select_if(movies, is.numeric)
+cormat <-round(cor(movies_num), 2) 
+print(cormat)
+```
+Some helper functions
+```{r}
+get_lower_tri<-function(cormat){
+    cormat[upper.tri(cormat)] <- NA
+    return(cormat)
+}
+  # Get upper triangle of the correlation matrix
+get_upper_tri <- function(cormat){
+  cormat[lower.tri(cormat)]<- NA
+  return(cormat)
+  }
+reorder_cormat <- function(cormat){
+# Use correlation between variables as distance
+dd <- as.dist((1-cormat)/2)
+hc <- hclust(dd)
+cormat <-cormat[hc$order, hc$order]
+}
+```
+
+```{r}
+cormat <- reorder_cormat(cormat)
+upper_tri <- get_upper_tri(cormat)
+# Melt the correlation matrix
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+# Create a ggheatmap
+ggheatmap <- ggplot(melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") +
+  theme_minimal()+ # minimal theme
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+# Print the heatmap
+print(ggheatmap)
+```
+
+Adding the numbers
+```{r}
+ggheatmap + 
+geom_text(aes(Var2, Var1, label = value), color = "black", size = 4) +
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = c(0.6, 0.7),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+```
+
+From the heatmap we can see that
+1) OtherWin is correlated with OtherNom (0.85), which illustrates that more nominations result in more award winning.
+2)Metascore is corelated with IMDB-Rating (0,75). To simplify our models, we will remove IMDB-rating, because it is also correlated with Other_win.
+
+
+
+Dividing into train and test sets.
+```{r}
+set.seed(1985)
+train_index <- createDataPartition(movies$Covered, p= 0.8, list = F)
+train <- movies[train_index,]
+test <- movies[-train_index,]
+write.csv(test, file = "test.csv")
+write.csv(train, file ="train.csv")
+```
+Run from here.
+```{r}
+train <- read.csv("train.csv")
+test <- read.csv("test.csv")
+```
+
+Naive Bayes: dependent variable: Covered 
+```{r}
+model_nb <- naiveBayes(Covered~., data=train)
+pred_test_nb <- predict(model_nb, newdata= test)
+confusionMatrix(pred_test_nb, test$Covered, positive = "Yes")
+```
+ROC, AUC
+```{r}
+pred_test_nb_prob <- predict(model_nb, newdata= test, type= "raw")
+
+p_test_nb <- prediction(pred_test_nb_prob[,2], test$Covered)
+perf_nb <- performance(p_test_nb, "tpr","fpr")
+plot(perf_nb)
+```
+
+Area under the curve
+```{r}
+performance(p_test_nb, "auc")@y.values
+```
+
+
+Tree:
+```{r}
+
+model_tree = rpart(Covered~genre_first+year+duration+budget_adjusted+cast_facebook_likes+
+                     reviews+Rated+Metascore+imdbRating+imdbVotes+OscarWon+OtherWin+OscarNom+OtherNom,
+                   data = train, method = "class")
+pred_tree = predict(model_tree, test, type = "class")
+confusionMatrix(pred_tree, test$Covered, positive = "Yes")
+```
+Here's our first decision tree model that includes all our variables. We get accuracy of 71.75%, and a significant model since p-value is less than alpha. Let's see if we can improve it further.
+```{r}
+model_tree1 = rpart(Covered~year+budget_adjusted+Rated+imdbVotes+OtherWin,
+                   data = train, method = "class")
+pred_tree1 = predict(model_tree1, test, type = "class")
+confusionMatrix(pred_tree1, test$Covered, positive = "Yes")
+```
+
+```{r}
+prp(model_tree1, type = 2, extra = 4)
+```
+```{r}
+fancyRpartPlot(model_tree1)
+```
+## Let's calculate ROC to see how the model is performing.
+```{r}
+pred_tree_prob = predict(model_tree1, test)
+p_test_tree = prediction(pred_tree_prob[,2], test$Covered)
+perf_tree = performance(p_test_tree, "tpr", "fpr")
+
+plot(perf_tree)
+```
+```{r}
+performance(p_test_tree, "auc")@y.values
+
+```
+Our decision tree does an adequate job at this classification problem. The accuracy is 71.75%, which is much higher than the NIR. P-value is lower than alpha, meaning that our model is significant. Sensitivity is higher than specificity and PPV is higher than NPV, meaning that our model does a better job at correctly predicting positive values rather than false values. Lastly, ROC = 74.5% which is an adequate measure of performance.
+
+Logistic regression: Predicting Covered
+```{r}
+
+model_glm1 <- glm(Covered~year+budget_adjusted+Rated+imdbRating+imdbVotes+OtherNom, data = train, family = "binomial")
+summary(model_glm1)
+```
+```{r}
+conmax_glm1 <- predict(model_glm1, newdata = test, type = "response")
+conmax_glm1_class <- factor(ifelse(conmax_glm1>0.5, "Yes", "No"))
+confusionMatrix(conmax_glm1_class, test$Covered, positive = "Yes")
+```
+ Here, we can conclude that it is a useful model since accuracy is higher than no information rate (NIR). However, we observe an accuracy of 73.54%. Here, we observe budget_adjusted, year, imdbVotes and OtherNom as being the most significant variables.
+```{r}
+coef(model_glm1)
+```
+One unit increase in year, budget_adjusted, imdbRating, imdbVotes and OtherNom increase/decrease (depending on the sign of the coefficient) the logit odds of Covered (covering the budget) by the coefficient or (100*coefficient)%
+For the factor variable Rated, APPROVED is takes as base, and if the movie is rated anything other than APPROVED, the logit odds of Covered will increase/decrease by the coefficient of Rated.
+```{r}
+exp(coef(model_glm1))
+```
+One unit increase in year, budget_adjusted, imdbRating, imdbVotes and OtherNom will increase/decrease the odds of Covered by (1-coefficient) (we've already taken its exponent). 
+
+ROC glm
+```{r}
+roc_glm1 <- prediction(conmax_glm1, test$Covered)
+perf_glm1 <- performance (roc_glm1, "tpr", "fpr")
+plot(perf_glm1, colorsize= TRUE)
+```
+AUC glm
+```{r}
+performance(roc_glm1, "auc")@y.values
+```
+We get area under the curve of 77.4% whihc means our model is indeed performing well.
+
+```{r}
+model_glm2 <- glm(Covered~year+budget_adjusted+imdbVotes+OtherNom, data = train, family = "binomial")
+summary(model_glm2)
+conmax_glm2 <- predict(model_glm2, newdata = test, type = "response")
+conmax_glm2_class <- factor(ifelse(conmax_glm2>0.5, "Yes", "No"))
+confusionMatrix(conmax_glm2_class, test$Covered, positive = "Yes")
+```
+Here, we took the variables that were significant from the previous model. We have a useful model, however, the accuracy isn't as high as the previous one 70.85% < 73.54%. Therefore, we will go with the other model.
+
+
+
+
